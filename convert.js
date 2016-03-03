@@ -186,7 +186,8 @@ var uuid = require('node-uuid'),
                 thisParams = this.getParamsForPathItem(params, operation.parameters),
                 hasQueryParams = false,
                 param,
-                requestAttr;
+                requestAttr,
+                value;
 
             if (path.length > 0 && path[0] === '/') {
                 path = path.substring(1);
@@ -209,16 +210,28 @@ var uuid = require('node-uuid'),
             for (param in thisParams) {
                 if (thisParams.hasOwnProperty(param) && thisParams[param]) {
                     this.logger('Processing param: ' + JSON.stringify(param));
+
+                    value = (this.options.noPlaceholder) ? '' : '{{' + thisParams[param].name + '}}';
+
+                    if (this.options.useDefaults && thisParams[param].default) {
+                        value = thisParams[param].default;
+                    }
+
+                    if (this.options.params && this.options.params[thisParams[param].name]) {
+                        value = this.options.params[thisParams[param].name];
+                    }
+
                     if (thisParams[param].in === 'query') {
                         if (!hasQueryParams) {
                             hasQueryParams = true;
                             request.url += '?';
                         }
-                        request.url += thisParams[param].name + '={{' + thisParams[param].name + '}}&';
+
+                        request.url += thisParams[param].name + '=' + value + '&';
                     }
 
                     else if (thisParams[param].in === 'header') {
-                        request.headers += thisParams[param].name + ': {{' + thisParams[param].name + '}}\n';
+                        request.headers += thisParams[param].name + ': ' + value + '\n';
                     }
 
                     else if (thisParams[param].in === 'body') {
@@ -230,7 +243,7 @@ var uuid = require('node-uuid'),
                         request.dataMode = 'params';
                         request.data.push({
                             'key': thisParams[param].name,
-                            'value': '{{' + thisParams[param].name + '}}',
+                            'value': value,
                             'type': 'text',
                             'enabled': true
                         });
@@ -259,9 +272,11 @@ var uuid = require('node-uuid'),
 
             var paramsForPathItem = this.getParamsForPathItem(this.baseParams, pathItem.parameters);
 
-            // replace path variables {petId} with {{..}}
+            // replace path variables {petId} with :petId
             if (path) {
-                path = path.replace('{', '{{').replace('}', '}}');
+                path = path.replace(/\{(.+)\}/g, function(match, bit, offset, str) {
+                  return ':' + bit
+                });
             }
 
             if (pathItem.get) {
@@ -326,12 +341,18 @@ var uuid = require('node-uuid'),
             }
         },
 
-        convert: function (json) {
+        convert: function (json, options) {
             var validationResult = this.validate(json);
             if (validationResult.status === 'failed') {
                 // error
                 return validationResult;
             }
+
+            if(options === null || options === undefined) {
+                options = {};
+            }
+
+            this.options = options;
 
             this.collectionId = uuid.v4();
 
