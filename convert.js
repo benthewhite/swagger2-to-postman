@@ -9,7 +9,7 @@ var uuid = require('node-uuid'),
     },
 
     Swagger2Postman = jsface.Class({
-        constructor: function () {
+        constructor: function (options) {
             this.collectionJson = {
                 'id': '',
                 'name': '',
@@ -26,6 +26,11 @@ var uuid = require('node-uuid'),
             this.baseParams = {};
             this.logger = function () {
             };
+
+            this.options = options || {};
+
+            this.options.includeQueryParams = typeof (this.options.includeQueryParams) == 'undefined' ?
+                                                        true : this.options.includeQueryParams;
         },
 
         setLogger: function (func) {
@@ -42,7 +47,7 @@ var uuid = require('node-uuid'),
             }
             else {
                 var info = json.info;
-                if (!info.title) {
+                if (!info || !info.title) {
                     return new ConvertResult('failed', 'Must contain info.title');
                 }
             }
@@ -187,12 +192,26 @@ var uuid = require('node-uuid'),
                 hasQueryParams = false,
                 param,
                 requestAttr,
-                value;
+                thisConsumes = root.globalConsumes,
+                tempBasePath;
 
             if (path.length > 0 && path[0] === '/') {
                 path = path.substring(1);
             }
-            request.url = decodeURI(url.resolve(this.basePath, path));
+
+            // Problem here
+            // url.resolve("http://host.com/", "/api") returns "http://host.com/api"
+            // but url.resolve("http://{{host}}.com/", "/api") returns "http:///%7B..host.com/api"
+            // (note the extra slash after http:)
+            // request.url = decodeURI(url.resolve(this.basePath, path));
+            tempBasePath = this.basePath
+                .replace(/{{/g, 'POSTMAN_VARIABLE_OPEN_DB')
+                .replace(/}}/g, 'POSTMAN_VARIABLE_CLOSE_DB');
+
+            request.url = decodeURI(url.resolve(tempBasePath, path))
+                .replace(/POSTMAN_VARIABLE_OPEN_DB/g, '{{')
+                .replace(/POSTMAN_VARIABLE_CLOSE_DB/g, '}}');
+
             request.method = method;
             request.name = operation.summary;
             request.time = (new Date()).getTime();
@@ -204,6 +223,15 @@ var uuid = require('node-uuid'),
                         request[requestAttr] = operation[META_KEY][requestAttr];
                     }
                 }
+            }
+
+            if (operation.consumes) {
+                thisConsumes = operation.consumes;
+            }
+            // set the default dataMode for this request, even if it doesn't have a body
+            // eg. for GET requests
+            if (thisConsumes.indexOf('application/x-www-form-urlencoded') > -1) {
+                request.dataMode = 'urlencoded';
             }
 
             // set data and headers
@@ -221,7 +249,7 @@ var uuid = require('node-uuid'),
                         value = this.options.params[thisParams[param].name];
                     }
 
-                    if (thisParams[param].in === 'query') {
+                    if (thisParams[param].in === 'query' && this.options.includeQueryParams !== false) {
                         if (!hasQueryParams) {
                             hasQueryParams = true;
                             request.url += '?';
@@ -240,14 +268,25 @@ var uuid = require('node-uuid'),
                     }
 
                     else if (thisParams[param].in === 'formData') {
-                        request.dataMode = 'params';
+                        if (thisConsumes.indexOf('application/x-www-form-urlencoded') > -1) {
+                            request.dataMode = 'urlencoded';
+                        }
+                        else {
+                            request.dataMode = 'params';
+                        }
                         request.data.push({
                             'key': thisParams[param].name,
                             'value': value,
                             'type': 'text',
                             'enabled': true
                         });
-                    } // (thisParams[param].in === 'path') case not handled
+                    }
+                    else if (thisParams[param].in === 'path') {
+                        if (!request.hasOwnProperty('pathVariables')) {
+                            request.pathVariables = {};
+                        }
+                        request.pathVariables[thisParams[param].name] = '{{' + thisParams[param].name + '}}';
+                    }
                 }
             }
 
@@ -270,7 +309,13 @@ var uuid = require('node-uuid'),
                 return;
             }
 
-            var paramsForPathItem = this.getParamsForPathItem(this.baseParams, pathItem.parameters);
+            var paramsForPathItem = this.getParamsForPathItem(this.baseParams, pathItem.parameters),
+                acceptedPostmanVerbs = [
+                    'get', 'put', 'post', 'patch', 'delete', 'copy', 'head', 'options',
+                    'link', 'unlink', 'purge', 'lock', 'unlock', 'propfind', 'view'],
+                numVerbs = acceptedPostmanVerbs.length,
+                i,
+                verb;
 
             // replace path variables {petId} with :petId
             if (path) {
@@ -279,26 +324,17 @@ var uuid = require('node-uuid'),
                 });
             }
 
-            if (pathItem.get) {
-                this.addOperationToFolder(path, 'GET', pathItem.get, folderName, paramsForPathItem);
-            }
-            if (pathItem.put) {
-                this.addOperationToFolder(path, 'PUT', pathItem.put, folderName, paramsForPathItem);
-            }
-            if (pathItem.post) {
-                this.addOperationToFolder(path, 'POST', pathItem.post, folderName, paramsForPathItem);
-            }
-            if (pathItem.delete) {
-                this.addOperationToFolder(path, 'DELETE', pathItem.delete, folderName, paramsForPathItem);
-            }
-            if (pathItem.options) {
-                this.addOperationToFolder(path, 'OPTIONS', pathItem.options, folderName, paramsForPathItem);
-            }
-            if (pathItem.head) {
-                this.addOperationToFolder(path, 'HEAD', pathItem.head, folderName, paramsForPathItem);
-            }
-            if (pathItem.path) {
-                this.addOperationToFolder(path, 'PATH', pathItem.path, folderName, paramsForPathItem);
+            for (i = 0; i < numVerbs; i++) {
+                verb = acceptedPostmanVerbs[i];
+                if (pathItem[verb]) {
+                    this.addOperationToFolder(
+                        path,
+                        verb.toUpperCase(),
+                        pathItem[verb],
+                        folderName,
+                        paramsForPathItem
+                    );
+                }
             }
         },
 
@@ -355,6 +391,8 @@ var uuid = require('node-uuid'),
             this.options = options;
 
             this.collectionId = uuid.v4();
+
+            this.globalConsumes = json.consumes || [];
 
             this.handleParams(json.parameters, 'collection');
 
