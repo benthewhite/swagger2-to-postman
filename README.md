@@ -29,7 +29,8 @@ The constructor can also take in a map of configuration options
 
 ~~~
 var options = {
-  includeQueryParams: false
+  includeQueryParams: false,
+  useDefaults: false
 };
 
 var swaggerConverter = new Swagger2Postman(options);
@@ -37,3 +38,4 @@ var swaggerConverter = new Swagger2Postman(options);
 
 valid options are:
 includeQueryParams - (default true) Include query string parameters in the request url.
+useDefaults - (default false) Replace query string parameters values with their defaults if set in the request url.
